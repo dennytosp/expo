@@ -8,6 +8,8 @@
 
 ### 🐛 Bug fixes
 
+- [iOS] Respect the declared `UTI`/`mimeType` when sharing.
+
 ### 💡 Others
 
 ## 57.0.8 - 2026-07-29
