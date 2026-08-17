@@ -49,16 +49,28 @@ public final class SharingModule: Module {
           return
         }
 
+        guard currentViewController.viewIfLoaded?.window != nil,
+          currentViewController.presentedViewController == nil,
+          !currentViewController.isBeingPresented,
+          !currentViewController.isBeingDismissed,
+          currentViewController.transitionCoordinator == nil
+        else {
+          session.reject(FailedToPresentShareSheetException())
+          return
+        }
+
         let activityController = UIActivityViewController(activityItems: [itemURL], applicationActivities: nil)
         activityController.title = options.dialogTitle
         self.activeShareSheet = activityController
 
         activityController.completionWithItemsHandler = { _, _, _, _ in
-          // Resolve unconditionally. UIActivityViewController invokes this once
-          // on dismissal for every (activityType, completed) permutation.
-          // Keep staged files cached because some activities read them after dismissal.
-          self.activeShareSheet = nil
-          session.resolve()
+          DispatchQueue.main.async {
+            // Resolve unconditionally. UIActivityViewController invokes this once
+            // on dismissal for every (activityType, completed) permutation.
+            // Keep staged files cached because some activities read them after dismissal.
+            self.activeShareSheet = nil
+            session.resolve()
+          }
         }
 
         // Apple docs state that `UIActivityViewController` must be presented in a
@@ -242,15 +254,8 @@ private final class ShareSheetSession {
     }
   }
 
-  deinit {
-    guard !isSettled else {
-      return
-    }
-    cleanup()
-    promise.reject(FailedToPresentShareSheetException())
-  }
-
   private func settle(cleanupStagedDirectory: Bool = false, _ action: () -> Void) {
+    dispatchPrecondition(condition: .onQueue(.main))
     guard !isSettled else {
       return
     }
