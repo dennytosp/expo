@@ -12,9 +12,15 @@ internal final class MissingCurrentViewControllerException: Exception, @unchecke
   }
 }
 
+internal final class SharingInProgressException: Exception, @unchecked Sendable {
+  override var reason: String {
+    "Cannot start a new share because another share is still in progress. Await the previous `shareAsync` call before trying again."
+  }
+}
+
 internal final class FailedToPresentShareSheetException: Exception, @unchecked Sendable {
   override var reason: String {
-    "The share sheet could not be presented"
+    "Could not present the share sheet because no visible view controller was available or another modal transition was in progress. Retry after the current transition completes."
   }
 }
 

@@ -1,7 +1,12 @@
 import ExpoModulesCore
 import UniformTypeIdentifiers
 
+private let sharingQueue = DispatchQueue(label: "expo.modules.sharing.AsyncQueue", qos: .userInitiated)
+private let stagedShareLifetime: TimeInterval = 24 * 60 * 60
+
 public final class SharingModule: Module {
+  private weak var activeShareSheet: UIActivityViewController?
+
   private var appGroupId: String {
     get throws {
       guard let groupId = Bundle.main.object(forInfoDictionaryKey: "ExpoShareIntoAppGroupId") as? String else {
@@ -18,6 +23,9 @@ public final class SharingModule: Module {
       guard FileSystemUtilities.isReadableFile(appContext, url) else {
         throw FilePermissionException()
       }
+      guard !isShareSheetActive() else {
+        throw SharingInProgressException()
+      }
 
       // `UIActivityViewController` derives the shared item's type (and preview)
       // from the file's extension. Cached files often have no extension, so when
@@ -31,6 +39,11 @@ public final class SharingModule: Module {
       DispatchQueue.main.async {
         let session = ShareSheetSession(promise: promise, stagedDirectory: linkDirectory)
 
+        guard !self.isShareSheetActive() else {
+          session.reject(SharingInProgressException())
+          return
+        }
+
         guard let currentViewController = self.appContext?.utilities?.currentViewController() else {
           session.reject(MissingCurrentViewControllerException())
           return
@@ -38,10 +51,13 @@ public final class SharingModule: Module {
 
         let activityController = UIActivityViewController(activityItems: [itemURL], applicationActivities: nil)
         activityController.title = options.dialogTitle
+        self.activeShareSheet = activityController
 
         activityController.completionWithItemsHandler = { _, _, _, _ in
           // Resolve unconditionally. UIActivityViewController invokes this once
           // on dismissal for every (activityType, completed) permutation.
+          // Keep staged files cached because some activities read them after dismissal.
+          self.activeShareSheet = nil
           session.resolve()
         }
 
@@ -64,6 +80,7 @@ public final class SharingModule: Module {
         currentViewController.present(activityController, animated: true)
       }
     }
+    .runOnQueue(sharingQueue)
 
     // MARK: - Share into
 
@@ -102,13 +119,22 @@ public final class SharingModule: Module {
   }
 
   private func declaredContentType(_ options: SharingOptions) -> UTType? {
-    if let uti = options.UTI, let type = UTType(uti) {
+    if let uti = options.UTI, let type = UTType(uti), type.preferredFilenameExtension != nil {
       return type
     }
-    if let mimeType = options.mimeType, let type = UTType(mimeType: mimeType) {
+    if let mimeType = options.mimeType,
+      let type = UTType(mimeType: mimeType),
+      type.preferredFilenameExtension != nil {
       return type
     }
     return nil
+  }
+
+  private func isShareSheetActive() -> Bool {
+    if Thread.isMainThread {
+      return activeShareSheet != nil
+    }
+    return DispatchQueue.main.sync { activeShareSheet != nil }
   }
 
   private func shareableURL(for url: URL, options: SharingOptions) -> URL {
@@ -116,6 +142,10 @@ public final class SharingModule: Module {
     guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
       return url
     }
+
+    let stagingDirectory = (appContext?.config.cacheDirectory ?? FileManager.default.temporaryDirectory)
+      .appendingPathComponent("expo-sharing", isDirectory: true)
+    cleanupStaleShareDirectories(in: stagingDirectory)
 
     guard let type = declaredContentType(options), let ext = type.preferredFilenameExtension else {
       return url
@@ -125,9 +155,9 @@ public final class SharingModule: Module {
       return url
     }
 
-    let baseName = url.deletingPathExtension().lastPathComponent
-    let linkDirectory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("expo-sharing", isDirectory: true)
+    // An explicitly declared type intentionally takes precedence over a conflicting filename extension.
+    let baseName = url.lastPathComponent
+    let linkDirectory = stagingDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     let linkURL = linkDirectory
       .appendingPathComponent(baseName.isEmpty ? "expo-sharing-item" : baseName)
@@ -146,7 +176,34 @@ public final class SharingModule: Module {
       return linkURL
     } catch {
       try? FileManager.default.removeItem(at: linkDirectory)
+      appContext?.jsLogger.warn(
+        "expo-sharing: Failed to stage '\(url.lastPathComponent)' with the declared type: \(error.localizedDescription). Sharing the original URL, so the declared type will be ignored."
+      )
       return url
+    }
+  }
+
+  private func cleanupStaleShareDirectories(in directory: URL) {
+    let resourceKeys: Set<URLResourceKey> = [.isDirectoryKey, .contentModificationDateKey, .creationDateKey]
+    guard let contents = try? FileManager.default.contentsOfDirectory(
+      at: directory,
+      includingPropertiesForKeys: Array(resourceKeys),
+      options: .skipsHiddenFiles
+    ) else {
+      return
+    }
+
+    let expirationDate = Date(timeIntervalSinceNow: -stagedShareLifetime)
+    for url in contents {
+      guard UUID(uuidString: url.lastPathComponent) != nil,
+        let values = try? url.resourceValues(forKeys: resourceKeys),
+        values.isDirectory == true,
+        let contentDate = values.contentModificationDate ?? values.creationDate,
+        contentDate < expirationDate
+      else {
+        continue
+      }
+      try? FileManager.default.removeItem(at: url)
     }
   }
 
@@ -180,7 +237,7 @@ private final class ShareSheetSession {
   }
 
   func reject(_ exception: Exception) {
-    settle {
+    settle(cleanupStagedDirectory: true) {
       promise.reject(exception)
     }
   }
@@ -193,12 +250,14 @@ private final class ShareSheetSession {
     promise.reject(FailedToPresentShareSheetException())
   }
 
-  private func settle(_ action: () -> Void) {
+  private func settle(cleanupStagedDirectory: Bool = false, _ action: () -> Void) {
     guard !isSettled else {
       return
     }
     isSettled = true
-    cleanup()
+    if cleanupStagedDirectory {
+      cleanup()
+    }
     action()
   }
 
