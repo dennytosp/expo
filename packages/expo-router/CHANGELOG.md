@@ -4,6 +4,7 @@
 
 ### 🛠 Breaking changes
 
+- Generate deterministic navigation state and route keys, and require `routeKeySeq` in complete navigation states.
 - Queue `navigation.dispatch` and navigation helper actions until after commit, add synchronous `navigation.dispatchSync`, and require functional actions to use `dispatchSync`.
 - Require complete state in `CommonActions.reset` and `resetRoot`, and remove `Router.getRehydratedState` from `expo-router/react-navigation`.
 - Remove `NavigatorScreenParams`, `getActionFromState`, and `LinkingOptions.getActionFromState` from `expo-router/react-navigation`.

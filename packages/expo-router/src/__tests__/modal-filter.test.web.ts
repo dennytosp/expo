@@ -20,6 +20,7 @@ describe('modal route filtering on web', () => {
       index,
       routes: routeKeys.map((key) => ({ key, name: key })),
       stale: false,
+      routeKeySeq: 0,
       key: 'stack-1',
       routeNames: routeKeys,
     } as any;
