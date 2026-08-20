@@ -64,4 +64,7 @@ minimumReleaseAgeExclude:
   - 'expo-modules-jsi'
   - 'babel-preset-expo'
   - 'jest-expo'
+  - metro
+  - 'metro-*'
+  - 'ob1'
   - '2g'
